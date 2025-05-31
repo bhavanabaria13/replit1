@@ -1,0 +1,107 @@
+To ensure your DApp correctly reads contract data from the address [`0x25d2e7006D10F30F731D6B4A2D3C2359601D22f9`](https://explorer.securechain.ai/address/0x25d2e7006D10F30F731D6B4A2D3C2359601D22f9?tab=contract), you need to:
+
+---
+
+### ✅ Step 1: Confirm the ABI and Contract Address
+
+Check that the ABI and address used in your code match the deployed contract. In your project, the interaction happens through this file:
+
+```ts
+// lottery-contract.ts (assumed structure)
+import { ethers } from 'ethers';
+
+const contractAddress = '0x25d2e7006D10F30F731D6B4A2D3C2359601D22f9';
+const abi = [ /* ...contract ABI here... */ ];
+
+export const lotteryContract = {
+  async purchaseTicket(ticketId: number, network: string): Promise<string> {
+    const signer = await getSigner(network);
+    const contract = new ethers.Contract(contractAddress, abi, signer);
+    const tx = await contract.purchaseTicket(ticketId);
+    await tx.wait();
+    return tx.hash;
+  },
+
+  async estimateGas(ticketId: number, network: string): Promise<string> {
+    const signer = await getSigner(network);
+    const contract = new ethers.Contract(contractAddress, abi, signer);
+    const gasEstimate = await contract.estimateGas.purchaseTicket(ticketId);
+    return gasEstimate.toString();
+  },
+
+  // Add proper read methods like:
+  async getTicketPrice(network: string): Promise<string> {
+    const provider = await getProvider(network);
+    const contract = new ethers.Contract(contractAddress, abi, provider);
+    return await contract.ticketPrice(); // Example read function
+  }
+};
+```
+
+You must implement actual read functions (e.g., `ticketPrice()`, `getCurrentLotteryId()`) depending on your contract ABI.
+
+---
+
+### ✅ Step 2: Debug Data Fetching in Hooks
+
+In `use-lottery.tsx`, you use a REST API-based fetch approach, not directly calling smart contract read methods:
+
+```ts
+return useQuery({
+  queryKey: [`/api/lottery/current/${network}`],
+  enabled: !!network,
+});
+```
+
+If that API endpoint isn’t returning proper results, you should either:
+
+1. **Fix the API backend logic**, OR
+2. **Bypass API and call contract functions directly** using `ethers.js` or `viem`.
+
+---
+
+### ✅ Step 3: Confirm Backend or Direct Read Code
+
+If you want to switch to direct reads from the contract, add a new query in your hook:
+
+```ts
+export function useTicketPrice(network: string) {
+  return useQuery({
+    queryKey: ['ticketPrice', network],
+    queryFn: async () => {
+      return await lotteryContract.getTicketPrice(network);
+    },
+    enabled: !!network,
+  });
+}
+```
+
+Ensure that `lotteryContract.getTicketPrice` is implemented properly in your `lottery-contract.ts`.
+
+---
+
+### ✅ Step 4: Fix Common Issues
+
+1. **Wrong ABI:** Make sure the ABI in `lottery-contract.ts` is from the exact deployed contract at the SecureChain link.
+2. **Missing Public View Functions:** If the contract doesn’t expose public `view` functions, you can’t read them directly—check Solidity code.
+3. **Provider issues:** Make sure your `getProvider(network)` method returns a valid provider (e.g., Alchemy, Infura, or default ethers provider for Mumbai).
+4. **CORS/API errors:** If using `/api/...` endpoints, check that your backend API correctly fetches data from the contract and returns valid JSON.
+
+---
+
+### 🧪 How to Test Contract Calls Directly
+
+Paste this in a test file or browser console using MetaMask:
+
+```ts
+const provider = new ethers.providers.Web3Provider(window.ethereum);
+const contract = new ethers.Contract('0x25d2e7006D10F30F731D6B4A2D3C2359601D22f9', abi, provider);
+const price = await contract.ticketPrice();
+console.log(price.toString());
+```
+
+Replace `ticketPrice()` with the actual view function available in the ABI.
+
+---
+
+If you'd like, upload your full ABI or the contract source code, and I’ll help write the exact `read` functions for your frontend.

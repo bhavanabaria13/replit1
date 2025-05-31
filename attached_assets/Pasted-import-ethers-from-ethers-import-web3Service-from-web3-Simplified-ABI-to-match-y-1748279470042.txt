@@ -1,0 +1,272 @@
+import { ethers } from 'ethers';
+import { web3Service } from './web3';
+
+// Simplified ABI to match your deployed contract
+const LOTTERY_ABI = [
+  // Basic functions that should work with most lottery contracts
+  "function purchaseTicket(uint256 ticketId) external payable",
+  "function ticketPrice() external view returns (uint256)",
+  "function currentRound() external view returns (uint256)",
+  
+  // Alternative function names that might be in your contract
+  "function buyTicket(uint256 ticketId) external payable",
+  "function getTicketPrice() external view returns (uint256)",
+  "function getCurrentRound() external view returns (uint256)",
+  
+  // Events
+  "event TicketPurchased(uint256 indexed ticketId, address indexed buyer, uint256 price)",
+  "event TicketBought(uint256 indexed ticketId, address indexed buyer, uint256 price)"
+];
+
+// Contract addresses for different networks
+const CONTRACT_ADDRESSES: Record<string, string> = {
+  //sepolia: '0x25d2e7006D10F30F731D6B4A2D3C2359601D22f9', // Updated Lottery contract on Sepolia!
+  scai: '0x25d2e7006D10F30F731D6B4A2D3C2359601D22f9', // Deploy to SCAI network when ready
+};
+
+export class LotteryContract {
+  private contract: ethers.Contract | null = null;
+  private provider: ethers.BrowserProvider | null = null;
+
+  async initialize(network: string): Promise<void> {
+    const contractAddress = CONTRACT_ADDRESSES[network];
+    if (!contractAddress) {
+      throw new Error(`Contract not deployed on ${network} network`);
+    }
+
+    const web3Provider = web3Service.getCurrentProvider();
+    if (!web3Provider.provider) {
+      throw new Error('Web3 provider not initialized');
+    }
+
+    this.provider = web3Provider.provider;
+    this.contract = new ethers.Contract(contractAddress, LOTTERY_ABI, this.provider);
+  }
+
+  async purchaseTicket(ticketId: number, network: string): Promise<string> {
+    if (!this.contract) {
+      await this.initialize(network);
+    }
+
+    const web3Provider = web3Service.getCurrentProvider();
+    if (!web3Provider.signer) {
+      throw new Error('Wallet not connected');
+    }
+
+    if (!web3Provider.provider) {
+      throw new Error('Web3 provider not available');
+    }
+
+    try {
+      // Create contract instance with signer
+      const contractWithSigner = new ethers.Contract(
+        CONTRACT_ADDRESSES[network], 
+        LOTTERY_ABI, 
+        web3Provider.signer
+      );
+      
+      // Get ticket price from contract
+      const ticketPrice = ethers.parseEther('0.01');
+      
+      console.log(`Purchasing ticket ${ticketId} for ${ethers.formatEther(ticketPrice)} ETH`);
+      
+      // Send transaction to blockchain with proper gas estimation
+      const gasEstimate = await contractWithSigner.purchaseTicket.estimateGas(ticketId, {
+        value: ticketPrice,
+      });
+      
+      // Add 20% buffer to gas estimate
+      const gasLimit = gasEstimate + (gasEstimate * BigInt(20)) / BigInt(100);
+      
+      const tx = await contractWithSigner.purchaseTicket(ticketId, {
+        value: ticketPrice,
+        gasLimit: gasLimit,
+      });
+      
+      console.log(`Transaction sent: ${tx.hash}`);
+      
+      // Wait for transaction confirmation
+      const receipt = await tx.wait();
+      console.log(`Transaction confirmed in block: ${receipt.blockNumber}`);
+
+      return tx.hash;
+    } catch (error: any) {
+      console.error('Blockchain transaction error:', error);
+      
+      if (error.code === 'INSUFFICIENT_FUNDS') {
+        throw new Error('Insufficient funds to purchase ticket');
+      } else if (error.code === 'USER_REJECTED' || error.code === 4001) {
+        throw new Error('Transaction rejected by user');
+      } else if (error.message?.includes('execution reverted')) {
+        throw new Error('Smart contract rejected transaction - ticket may already be sold');
+      } else {
+        throw new Error(`Blockchain transaction failed: ${error.message || error.reason || 'Unknown error'}`);
+      }
+    }
+  }
+
+  async estimateGas(ticketId: number, network: string): Promise<string> {
+    if (!this.contract) {
+      await this.initialize(network);
+    }
+
+    const web3Provider = web3Service.getCurrentProvider();
+    if (!web3Provider.signer) {
+      throw new Error('Wallet not connected');
+    }
+
+    try {
+      const contractWithSigner = this.contract!.connect(web3Provider.signer);
+      const ticketPrice = ethers.parseEther('0.01');
+      
+      const gasEstimate = await contractWithSigner.purchaseTicket.estimateGas(ticketId, {
+        value: ticketPrice,
+      });
+
+      // Get current gas price
+      const gasPrice = await this.provider!.getFeeData();
+      const gasCost = gasEstimate * (gasPrice.gasPrice || BigInt(0));
+      
+      return ethers.formatEther(gasCost);
+    } catch (error) {
+      // Return default estimate if estimation fails
+      return '0.002';
+    }
+  }
+
+  async getTicketPrice(): Promise<string> {
+    if (!this.contract) {
+      return '0.01'; // Fallback price
+    }
+
+    try {
+      const price = await this.contract.ticketPrice();
+      return ethers.formatEther(price);
+    } catch (error) {
+      return '0.01'; // Fallback price
+    }
+  }
+
+  async getCurrentRound(): Promise<number> {
+    if (!this.contract) {
+      return 1; // Fallback round
+    }
+
+    try {
+      const round = await this.contract.currentRound();
+      return Number(round);
+    } catch (error) {
+      return 1; // Fallback round
+    }
+  }
+
+  async getTicketOwner(roundId: number, ticketId: number): Promise<string | null> {
+    if (!this.contract) {
+      return null;
+    }
+
+    try {
+      const owner = await this.contract.getTicketOwner(roundId, ticketId);
+      return owner === ethers.ZeroAddress ? null : owner;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  async getUserTickets(roundId: number, userAddress: string): Promise<number[]> {
+    if (!this.contract) {
+      return [];
+    }
+
+    try {
+      const tickets = await this.contract.getUserTickets(roundId, userAddress);
+      return tickets.map((t: any) => Number(t));
+    } catch (error) {
+      return [];
+    }
+  }
+
+  async getRoundInfo(roundId: number): Promise<{
+    id: number;
+    startTime: Date;
+    endTime: Date;
+    prizePool: string;
+    winner: string | null;
+    isActive: boolean;
+    isDrawn: boolean;
+    ticketsSold: number;
+  } | null> {
+    if (!this.contract) {
+      return null;
+    }
+
+    try {
+      const result = await this.contract.getRoundInfo(roundId);
+      return {
+        id: Number(result[0]),
+        startTime: new Date(Number(result[1]) * 1000),
+        endTime: new Date(Number(result[2]) * 1000),
+        prizePool: ethers.formatEther(result[3]),
+        winner: result[4] === ethers.ZeroAddress ? null : result[4],
+        isActive: result[5],
+        isDrawn: result[6],
+        ticketsSold: Number(result[7])
+      };
+    } catch (error) {
+      return null;
+    }
+  }
+
+  async getAvailableTickets(roundId: number): Promise<number[]> {
+    if (!this.contract) {
+      return [];
+    }
+
+    try {
+      const tickets = await this.contract.getAvailableTickets(roundId);
+      return tickets.map((t: any) => Number(t));
+    } catch (error) {
+      return [];
+    }
+  }
+
+  async withdrawPrize(roundId: number, network: string): Promise<string> {
+    if (!this.contract) {
+      await this.initialize(network);
+    }
+
+    const web3Provider = web3Service.getCurrentProvider();
+    if (!web3Provider.signer) {
+      throw new Error('Wallet not connected');
+    }
+
+    const contractWithSigner = this.contract!.connect(web3Provider.signer);
+
+    try {
+      const tx = await contractWithSigner.withdrawPrize(roundId, {
+        gasLimit: 100000,
+      });
+
+      return tx.hash;
+    } catch (error: any) {
+      if (error.code === 'USER_REJECTED') {
+        throw new Error('Transaction rejected by user');
+      } else {
+        throw new Error(`Prize withdrawal failed: ${error.message}`);
+      }
+    }
+  }
+
+  // Mock contract interaction for demo purposes
+  async mockPurchaseTicket(ticketId: number): Promise<string> {
+    // Simulate transaction delay
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    
+    // Generate mock transaction hash
+    const mockHash = '0x' + Array.from({length: 64}, () => Math.floor(Math.random() * 16).toString(16)).join('');
+    
+    return mockHash;
+  }
+}
+
+export const lotteryContract = new LotteryContract();
